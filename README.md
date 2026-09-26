@@ -21,10 +21,10 @@ Connect your device to the tailnet, then open:
 
 | Environment | Dashboard | API | Deployed version at time of writing |
 | --- | --- | --- | --- |
-| Turing Pi K3s | <http://ops-atlas> | <http://ops-atlas/api/status> | `0.3` |
+| Turing Pi K3s | <http://ops-atlas> | <http://ops-atlas/api/status> | `0.5` |
 | AWS EC2 | <http://ops-atlas-aws:8080> | <http://ops-atlas-aws:8080/api/status> | `0.5` |
 
-The API returns `target`, `version`, `hostname`, and `time_utc`. On page load, `status.js` highlights the matching card. Version `0.5` also displays a prominent runtime banner; the K3s deployment will gain that banner after its next image rollout. Refresh the page to fetch current status; it does not poll continuously. These tailnet hostnames are not public internet domains.
+The API returns `target`, `version`, `hostname`, and `time_utc`. On page load, `status.js` highlights the matching card. Version `0.5` also displays a prominent runtime banner. Refresh the page to fetch current status; it does not poll continuously. These tailnet hostnames are not public internet domains.
 
 ## Application files
 
