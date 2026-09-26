@@ -1,0 +1,115 @@
+---
+# Run from devops-manager:
+# ansible-playbook -i ansible/inventory.ini ansible/deploy-aws.yml
+- name: Deploy Ops Atlas to AWS
+  hosts: aws
+  become: true
+  vars:
+    app_version: "0.5"
+    app_name: ops-atlas-aws
+    app_dir: /opt/ops-atlas
+    app_image: "ops-atlas:{{ app_version }}"
+    app_target: aws-ec2
+    source_sha: >-
+      {{ (
+        lookup('ansible.builtin.file', playbook_dir ~ '/../Dockerfile') ~
+        lookup('ansible.builtin.file', playbook_dir ~ '/../index.html') ~
+        lookup('ansible.builtin.file', playbook_dir ~ '/../server.py') ~
+        lookup('ansible.builtin.file', playbook_dir ~ '/../status.js')
+      ) | hash('sha256') }}
+
+  tasks:
+    - name: Ensure application directory exists
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy application source from devops-manager
+      ansible.builtin.copy:
+        src: "../{{ item }}"
+        dest: "{{ app_dir }}/{{ item }}"
+        mode: "0644"
+      loop:
+        - Dockerfile
+        - index.html
+        - server.py
+        - status.js
+
+    - name: Inspect image currently tagged for this version
+      ansible.builtin.command:
+        argv: [docker, image, inspect, "{{ app_image }}"]
+      register: old_image
+      failed_when: false
+      changed_when: false
+
+    - name: Build image when application source changed
+      ansible.builtin.command:
+        argv:
+          - docker
+          - build
+          - --label
+          - "ops-atlas.source-sha={{ source_sha }}"
+          - -t
+          - "{{ app_image }}"
+          - "{{ app_dir }}"
+      when: >-
+        old_image.rc != 0 or
+        (((old_image.stdout | from_json)[0].Config.Labels | default({}, true))
+          .get('ops-atlas.source-sha', '') != source_sha)
+
+    - name: Inspect desired image after any build
+      ansible.builtin.command:
+        argv: [docker, image, inspect, "{{ app_image }}"]
+      register: desired_image
+      changed_when: false
+
+    - name: Inspect existing application container
+      ansible.builtin.command:
+        argv: [docker, container, inspect, "{{ app_name }}"]
+      register: existing_container
+      failed_when: false
+      changed_when: false
+
+    - name: Decide whether container needs replacement
+      ansible.builtin.set_fact:
+        replace_container: >-
+          {{ existing_container.rc != 0 or
+             not (existing_container.stdout | from_json)[0].State.Running or
+             (existing_container.stdout | from_json)[0].Image != (desired_image.stdout | from_json)[0].Id or
+             ('APP_VERSION=' ~ app_version) not in (existing_container.stdout | from_json)[0].Config.Env or
+             ('DEPLOYMENT_TARGET=' ~ app_target) not in (existing_container.stdout | from_json)[0].Config.Env }}
+
+    - name: Remove outdated or stopped container
+      ansible.builtin.command:
+        argv: [docker, rm, -f, "{{ app_name }}"]
+      when: replace_container and existing_container.rc == 0
+
+    - name: Start desired application container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - -d
+          - --name
+          - "{{ app_name }}"
+          - --restart
+          - unless-stopped
+          - -p
+          - "8080:8080"
+          - -e
+          - "DEPLOYMENT_TARGET={{ app_target }}"
+          - -e
+          - "APP_VERSION={{ app_version }}"
+          - "{{ app_image }}"
+      when: replace_container
+
+    - name: Confirm application status API responds locally
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8080/api/status
+        return_content: true
+      register: app_response
+      retries: 10
+      delay: 1
+      until: app_response.status == 200 and app_response.json.version == app_version and app_response.json.target == app_target
+      changed_when: false
