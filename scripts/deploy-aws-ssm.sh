@@ -31,6 +31,17 @@ else
     "$IMAGE_REF"
 fi
 
-curl --fail --silent --show-error --retry 12 --retry-connrefused \
-  --retry-delay 2 http://127.0.0.1:8080/api/status |
-  EXPECTED_VERSION="$release_version" python3 -c 'import json,os,sys; s=json.load(sys.stdin); assert s["target"] == "aws-ec2" and s["version"] == os.environ["EXPECTED_VERSION"], s; print("Ops Atlas AWS:", s["version"], s["hostname"])'
+attempt=0
+while [ "$attempt" -lt 15 ]; do
+  attempt=$((attempt + 1))
+  if response="$(curl --fail --silent --show-error --max-time 3 \
+    http://127.0.0.1:8080/api/status 2>/dev/null)" &&
+     printf '%s' "$response" |
+       EXPECTED_VERSION="$release_version" python3 -c 'import json,os,sys; s=json.load(sys.stdin); assert s["target"] == "aws-ec2" and s["version"] == os.environ["EXPECTED_VERSION"], s; print("Ops Atlas AWS:", s["version"], s["hostname"])' 2>/dev/null; then
+    exit 0
+  fi
+  sleep 2
+done
+
+echo 'Ops Atlas AWS did not report the expected version within the health-check window' >&2
+exit 1
