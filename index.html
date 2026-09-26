@@ -26,6 +26,8 @@
     h1 { margin: 12px 0; font-size: clamp(40px, 6vw, 72px); letter-spacing: -.065em; }
     .subtitle { color: #9baec5; max-width: 600px; line-height: 1.6; }
     .runtime-banner[hidden] { display: none; }
+    .runtime-banner.peer { margin-left: 12px; border-color: #8aafff; background: #172645; color: #c6d9ff; }
+    .runtime-banner.peer.unreachable { border-color: #f6b97b; background: #332719; color: #f6b97b; }
     .runtime-banner {
       display: inline-block; margin-top: 18px; padding: 12px 18px;
       border: 1px solid #70e0c4; border-radius: 12px;
@@ -63,6 +65,7 @@
       <p class="subtitle">A hands-on dashboard for learning how an application moves from a container to your Turing Pi cluster and the cloud.</p>
 
       <div id="runtime-banner" class="runtime-banner" hidden>Checking deployment...</div>
+      <div id="peer-banner" class="runtime-banner peer" hidden>Checking other deployment...</div>
 
       <div class="heading">
         <h2>Deployment targets</h2>

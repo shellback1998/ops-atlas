@@ -32,6 +32,15 @@ function updateCard(deployment, runtime) {
     : "Check your Tailscale connection or deployment";
 }
 
+function updatePeerBanner(deployment, runtime) {
+  const banner = document.querySelector("#peer-banner");
+  banner.hidden = false;
+  banner.classList.toggle("unreachable", !runtime);
+  banner.textContent = runtime
+    ? `ALSO LIVE ON ${deployment.name.toUpperCase()} · VERSION ${runtime.version}`
+    : `${deployment.name.toUpperCase()} · UNREACHABLE FROM THIS BROWSER`;
+}
+
 let checking = false;
 async function refreshDeployments() {
   if (checking) return;
@@ -40,7 +49,7 @@ async function refreshDeployments() {
     const current = await readStatus("/api/status");
     const currentDeployment = deployments.find((item) => item.target === current.target);
     const banner = document.querySelector("#runtime-banner");
-    banner.textContent = `RUNNING ON ${currentDeployment?.name ?? current.target} · VERSION ${current.version}`;
+    banner.textContent = `THIS PAGE RUNS ON ${currentDeployment?.name.toUpperCase() ?? current.target} · VERSION ${current.version}`;
     banner.hidden = false;
     if (currentDeployment) updateCard(currentDeployment, current);
 
@@ -50,9 +59,11 @@ async function refreshDeployments() {
           const runtime = await readStatus(item.url);
           if (runtime.target !== item.target) throw new Error(`Unexpected target: ${runtime.target}`);
           updateCard(item, runtime);
+          if (current.target !== "local-docker") updatePeerBanner(item, runtime);
         } catch (error) {
           console.warn(`Could not check ${item.name}:`, error);
           updateCard(item, null);
+          if (current.target !== "local-docker") updatePeerBanner(item, null);
         }
       }),
     );
