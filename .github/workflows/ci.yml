@@ -165,3 +165,61 @@ jobs:
         shell: bash
         run: |
           rm -f "$RUNNER_TEMP/ops-atlas.kubeconfig" "$RUNNER_TEMP/k3s-ca.crt"
+
+  deploy-aws:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [publish-image, deploy-k3s]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ops-atlas-aws-deployment
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the deploy script
+        uses: actions/checkout@v6
+
+      - name: Obtain temporary AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          aws-region: us-east-1
+          role-to-assume: arn:aws:iam::457106204711:role/ops-atlas-github-deploy
+
+      - name: Deploy published image through Systems Manager
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ needs.publish-image.outputs.digest }}
+          INSTANCE_ID: i-054c9cecfd2dbc1a4
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          image="ghcr.io/$GITHUB_REPOSITORY@$IMAGE_DIGEST"
+          jq -n --arg image "$image" --arg sha "$GITHUB_SHA" \
+            --rawfile script scripts/deploy-aws-ssm.sh \
+            '{commands: ["IMAGE_REF=" + $image, "RELEASE_SHA=" + $sha, $script]}' \
+            > "$RUNNER_TEMP/ops-atlas-ssm-parameters.json"
+          command_id="$(aws ssm send-command \
+            --document-name AWS-RunShellScript \
+            --instance-ids "$INSTANCE_ID" \
+            --comment "Ops Atlas deployment $GITHUB_SHA" \
+            --timeout-seconds 300 \
+            --parameters "file://$RUNNER_TEMP/ops-atlas-ssm-parameters.json" \
+            --query 'Command.CommandId' --output text)"
+          echo "SSM command: $command_id"
+          if ! aws ssm wait command-executed \
+            --command-id "$command_id" --instance-id "$INSTANCE_ID"; then
+            aws ssm get-command-invocation \
+              --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+              --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}'
+            exit 1
+          fi
+          aws ssm get-command-invocation \
+            --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query '{Status:Status,Output:StandardOutputContent}'
+
+      - name: Remove temporary SSM input
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/ops-atlas-ssm-parameters.json"
