@@ -65,6 +65,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
     steps:
       - name: Check out source
         uses: actions/checkout@v6
@@ -83,6 +85,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and publish AMD64 and ARM64 image
+        id: publish
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -92,3 +95,73 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+
+  deploy-k3s:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: publish-image
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ops-atlas-k3s-deployment
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Join the tailnet as a temporary runner
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:ops-atlas-deploy
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.36.4
+
+      - name: Configure restricted K3s access
+        shell: bash
+        env:
+          K3S_CA_B64: ${{ secrets.K3S_CA_B64 }}
+          K3S_DEPLOY_TOKEN: ${{ secrets.K3S_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$K3S_CA_B64"
+          test -n "$K3S_DEPLOY_TOKEN"
+          umask 077
+          export KUBECONFIG="$RUNNER_TEMP/ops-atlas.kubeconfig"
+          printf '%s' "$K3S_CA_B64" | base64 --decode > "$RUNNER_TEMP/k3s-ca.crt"
+          kubectl config set-cluster k3s \
+            --server=https://100.106.51.53:6443 \
+            --tls-server-name=k8s-manager \
+            --certificate-authority="$RUNNER_TEMP/k3s-ca.crt" \
+            --embed-certs=true
+          kubectl config set-credentials ops-atlas-deployer --token="$K3S_DEPLOY_TOKEN"
+          kubectl config set-context ops-atlas \
+            --cluster=k3s --user=ops-atlas-deployer --namespace=ops-atlas
+          kubectl config use-context ops-atlas
+          echo "KUBECONFIG=$KUBECONFIG" >> "$GITHUB_ENV"
+          kubectl auth can-i patch deployment/ops-atlas -n ops-atlas
+
+      - name: Deploy the image built in this run
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ needs.publish-image.outputs.digest }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$IMAGE_DIGEST"
+          image="ghcr.io/$REPOSITORY@$IMAGE_DIGEST"
+          kubectl -n ops-atlas set image deployment/ops-atlas "web=$image"
+          kubectl -n ops-atlas set env deployment/ops-atlas \
+            "APP_VERSION=sha-${RELEASE_SHA:0:7}"
+          kubectl -n ops-atlas rollout status deployment/ops-atlas --timeout=180s
+          kubectl -n ops-atlas get deployment ops-atlas \
+            -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+
+      - name: Remove temporary Kubernetes credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/ops-atlas.kubeconfig" "$RUNNER_TEMP/k3s-ca.crt"
