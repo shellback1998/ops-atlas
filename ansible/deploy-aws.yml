@@ -5,7 +5,7 @@
   hosts: aws
   become: true
   vars:
-    app_version: "0.5"
+    app_version: "0.7"
     app_name: ops-atlas-aws
     app_dir: /opt/ops-atlas
     app_image: "ops-atlas:{{ app_version }}"
