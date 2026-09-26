@@ -24,7 +24,7 @@ Connect your device to the tailnet, then open:
 | Turing Pi K3s | <http://ops-atlas> | <http://ops-atlas/api/status> | `0.5` |
 | AWS EC2 | <http://ops-atlas-aws:8080> | <http://ops-atlas-aws:8080/api/status> | `0.5` |
 
-The API returns `target`, `version`, `hostname`, and `time_utc`. On page load, `status.js` highlights the matching card. Version `0.5` also displays a prominent runtime banner. Refresh the page to fetch current status; it does not poll continuously. These tailnet hostnames are not public internet domains.
+The API returns `target`, `version`, `hostname`, and `time_utc`. On page load, `status.js` highlights the matching card and displays a prominent runtime banner. Refresh the page to fetch current status; it does not poll continuously. These tailnet hostnames are not public internet domains.
 
 ## Application files
 
@@ -41,6 +41,7 @@ The API returns `target`, `version`, `hostname`, and `time_utc`. On page load, `
 | `ansible/bootstrap-aws.yml` | Install Git and Docker on Amazon Linux 2023 |
 | `ansible/build-aws.yml` | Copy application files and build an AMD64 image on EC2 |
 | `ansible/run-aws.yml` | Start the AWS container if it does not exist |
+| `ansible/deploy-aws.yml` | Build when source changes, replace an outdated container, and verify the API |
 
 ## Work locally with Docker
 
@@ -103,16 +104,17 @@ The EC2 host is Amazon Linux 2023 on AMD64. In this lab Tailscale was installed 
 ssh -o BatchMode=yes ec2-user@ops-atlas-aws 'hostname && id -un'
 ansible aws -i ansible/inventory.ini -m ping
 ansible-playbook -i ansible/inventory.ini ansible/bootstrap-aws.yml
-ansible-playbook -i ansible/inventory.ini ansible/build-aws.yml
-ansible-playbook -i ansible/inventory.ini ansible/run-aws.yml
+ansible-playbook -i ansible/inventory.ini ansible/deploy-aws.yml
 curl http://ops-atlas-aws:8080/api/status
 ```
 
-`bootstrap-aws.yml` installs Git and Docker and enables Docker. `build-aws.yml` copies the app from `devops-manager` and builds it on EC2; it is not pulling the local registry image. `run-aws.yml` starts a container only when one with the expected name does not already exist. For an image update, change the version in both AWS playbooks, rebuild, remove the existing container, and rerun `run-aws.yml`:
+`bootstrap-aws.yml` installs Git and Docker and enables Docker. `deploy-aws.yml` copies application source from `devops-manager`, builds its AMD64 image on EC2 when the source changes, replaces the container when its image or runtime settings are outdated, and checks `/api/status`. Running the same playbook again should report `changed=0`. The earlier `build-aws.yml` and `run-aws.yml` remain in the repository as separate learning steps; the combined playbook is the current update path. It does not pull the ARM64 image from the local registry.
+
+For an application release, update `app_version` in `ansible/deploy-aws.yml` and run:
 
 ```bash
-ansible aws -i ansible/inventory.ini -b -m command -a 'docker rm -f ops-atlas-aws'
-ansible-playbook -i ansible/inventory.ini ansible/run-aws.yml
+ansible-playbook -i ansible/inventory.ini ansible/deploy-aws.yml
+curl http://ops-atlas-aws:8080/api/status
 ```
 
 The Docker port is reachable on the tailnet as `http://ops-atlas-aws:8080`; this lab does not open an AWS inbound security group rule for the app.
