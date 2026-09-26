@@ -22,7 +22,7 @@ spec:
         kubernetes.io/arch: arm64
       containers:
         - name: web
-          image: 192.168.8.191:5000/ops-atlas:0.7-arm64
+          image: ghcr.io/shellback1998/ops-atlas@sha256:3d057278b9b07d9f5a74a29f2bdd1e3a632cd3b6426aa244c6095094d87255ec
           env:
             - name: DEPLOYMENT_TARGET
               value: turing-pi-k3s
