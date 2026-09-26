@@ -1,0 +1,59 @@
+name: Ops Atlas CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Check Python syntax
+        run: python3 -m py_compile server.py
+
+      - name: Build container image
+        run: docker build --tag ops-atlas:ci .
+
+      - name: Test running container and API
+        run: |
+          docker run --detach --name ops-atlas-ci --publish 127.0.0.1:18080:8080 \
+            --env DEPLOYMENT_TARGET=local-docker --env APP_VERSION=ci ops-atlas:ci
+          trap 'docker rm --force ops-atlas-ci' EXIT
+          python3 - <<'PY'
+          import json
+          import time
+          from urllib.error import URLError
+          from urllib.request import urlopen
+
+          base = 'http://127.0.0.1:18080'
+          for attempt in range(30):
+              try:
+                  with urlopen(base + '/api/status', timeout=2) as response:
+                      status = json.load(response)
+                  break
+              except (OSError, URLError):
+                  time.sleep(1)
+          else:
+              raise SystemExit('Application did not become ready within 30 seconds')
+
+          assert status['app'] == 'Ops Atlas', status
+          assert status['target'] == 'local-docker', status
+          assert status['version'] == 'ci', status
+          assert status['hostname'], status
+          assert status['time_utc'], status
+
+          with urlopen(base + '/') as response:
+              assert b'status.js' in response.read()
+          with urlopen(base + '/status.js') as response:
+              assert b'/api/status' in response.read()
+          print('Container, dashboard, JavaScript, and status API passed')
+          PY
