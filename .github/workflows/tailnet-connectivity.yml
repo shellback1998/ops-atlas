@@ -1,0 +1,32 @@
+name: Ops Atlas Tailnet Connectivity
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  check-k3s-api:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Join the tailnet as a temporary runner
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:ops-atlas-deploy
+
+      - name: Verify connection to the K3s API
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The API requires Kubernetes credentials. HTTP 401 proves that the
+          # temporary runner can reach it through Tailscale without using any.
+          status="$(curl --silent --show-error --insecure --max-time 15 \
+            --output /dev/null --write-out '%{http_code}' \
+            https://100.106.51.53:6443/livez)"
+          echo "K3s API HTTP status: $status"
+          test "$status" = 401
