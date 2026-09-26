@@ -1,68 +1,34 @@
 ---
 # Run from devops-manager:
 # ansible-playbook -i ansible/inventory.ini ansible/deploy-aws.yml
-- name: Deploy Ops Atlas to AWS
+- name: Deploy Ops Atlas image to AWS
   hosts: aws
   become: true
   vars:
     app_version: "0.7"
     app_name: ops-atlas-aws
-    app_dir: /opt/ops-atlas
-    app_image: "ops-atlas:{{ app_version }}"
     app_target: aws-ec2
-    source_sha: >-
-      {{ (
-        lookup('ansible.builtin.file', playbook_dir ~ '/../Dockerfile') ~
-        lookup('ansible.builtin.file', playbook_dir ~ '/../index.html') ~
-        lookup('ansible.builtin.file', playbook_dir ~ '/../server.py') ~
-        lookup('ansible.builtin.file', playbook_dir ~ '/../status.js')
-      ) | hash('sha256') }}
+    # This digest is the tested multi-platform image published by GitHub Actions.
+    app_image: "ghcr.io/shellback1998/ops-atlas@sha256:3d057278b9b07d9f5a74a29f2bdd1e3a632cd3b6426aa244c6095094d87255ec"
 
   tasks:
-    - name: Ensure application directory exists
-      ansible.builtin.file:
-        path: "{{ app_dir }}"
-        state: directory
-        mode: "0755"
-
-    - name: Copy application source from devops-manager
-      ansible.builtin.copy:
-        src: "../{{ item }}"
-        dest: "{{ app_dir }}/{{ item }}"
-        mode: "0644"
-      loop:
-        - Dockerfile
-        - index.html
-        - server.py
-        - status.js
-
-    - name: Inspect image currently tagged for this version
+    - name: Pull the selected release image from GitHub Container Registry
       ansible.builtin.command:
-        argv: [docker, image, inspect, "{{ app_image }}"]
-      register: old_image
-      failed_when: false
-      changed_when: false
+        argv: [docker, pull, "{{ app_image }}"]
+      register: image_pull
+      changed_when: "'Downloaded newer image' in image_pull.stdout"
 
-    - name: Build image when application source changed
-      ansible.builtin.command:
-        argv:
-          - docker
-          - build
-          - --label
-          - "ops-atlas.source-sha={{ source_sha }}"
-          - -t
-          - "{{ app_image }}"
-          - "{{ app_dir }}"
-      when: >-
-        old_image.rc != 0 or
-        (((old_image.stdout | from_json)[0].Config.Labels | default({}, true))
-          .get('ops-atlas.source-sha', '') != source_sha)
-
-    - name: Inspect desired image after any build
+    - name: Inspect desired image
       ansible.builtin.command:
         argv: [docker, image, inspect, "{{ app_image }}"]
       register: desired_image
       changed_when: false
+
+    - name: Confirm AWS selected the AMD64 variant
+      ansible.builtin.assert:
+        that:
+          - "(desired_image.stdout | from_json)[0].Architecture == 'amd64'"
+        fail_msg: AWS did not pull the AMD64 image.
 
     - name: Inspect existing application container
       ansible.builtin.command:
