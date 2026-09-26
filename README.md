@@ -21,17 +21,17 @@ Connect your device to the tailnet, then open:
 
 | Environment | Dashboard | API | Deployed version at time of writing |
 | --- | --- | --- | --- |
-| Turing Pi K3s | <http://ops-atlas> | <http://ops-atlas/api/status> | `0.5` |
-| AWS EC2 | <http://ops-atlas-aws:8080> | <http://ops-atlas-aws:8080/api/status> | `0.5` |
+| Turing Pi K3s | <http://ops-atlas> | <http://ops-atlas/api/status> | `0.7` |
+| AWS EC2 | <http://ops-atlas-aws:8080> | <http://ops-atlas-aws:8080/api/status> | `0.7` |
 
-The API returns `target`, `version`, `hostname`, and `time_utc`. On page load, `status.js` highlights the matching card and displays a prominent runtime banner. Refresh the page to fetch current status; it does not poll continuously. These tailnet hostnames are not public internet domains.
+The API returns `target`, `version`, `hostname`, and `time_utc`. Either dashboard shows a banner for the environment serving that page and another banner when the peer deployment responds. The K3s and AWS cards refresh every 30 seconds. Checks run in your browser, so `UNREACHABLE` can mean that your device cannot reach a tailnet endpoint; it does not prove that the remote container stopped. Connect your browser device to the tailnet. These hostnames are not public internet domains.
 
 ## Application files
 
 | File | Purpose |
 | --- | --- |
 | `index.html` | Dashboard layout and styling |
-| `status.js` | Fetch `/api/status` and display the active environment |
+| `status.js` | Check both deployments and update their cards and banners |
 | `server.py` | Serve the dashboard and JSON status API on port 8080 |
 | `Dockerfile` | Package the Python application |
 | `k8s/ops-atlas.yaml` | Namespace, Deployment, and internal Service |
@@ -42,6 +42,7 @@ The API returns `target`, `version`, `hostname`, and `time_utc`. On page load, `
 | `ansible/build-aws.yml` | Copy application files and build an AMD64 image on EC2 |
 | `ansible/run-aws.yml` | Start the AWS container if it does not exist |
 | `ansible/deploy-aws.yml` | Build when source changes, replace an outdated container, and verify the API |
+| `.github/workflows/ci.yml` | Build and smoke-test the application on GitHub Actions |
 
 ## Work locally with Docker
 
@@ -63,8 +64,8 @@ Build and push an ARM64 image from `turing-manager`; match the tag in `k8s/ops-a
 
 ```bash
 docker buildx build --platform linux/arm64 \
-  -t 192.168.8.191:5000/ops-atlas:0.3-arm64 --load .
-docker push 192.168.8.191:5000/ops-atlas:0.3-arm64
+  -t 192.168.8.191:5000/ops-atlas:0.7-arm64 --load .
+docker push 192.168.8.191:5000/ops-atlas:0.7-arm64
 ```
 
 The current workflow copies the Kubernetes manifests to `k8s-manager` and applies them there:
@@ -140,6 +141,22 @@ kubectl get namespace ops-atlas
 
 On `turing-manager`, inspect and stop temporary Docker preview containers that you no longer need. Source files, Git history, and registry images are separate from these running workloads; remove them only when you intend to.
 
+## Continuous integration
+
+The first GitHub Actions workflow runs on pushes to `main`, pull requests targeting `main`, and manual dispatch. It checks Python syntax, builds the Docker image, starts a container, and checks the dashboard, JavaScript, and `/api/status`. It does not deploy to K3s or AWS and does not need cloud credentials.
+
+On `turing-manager`, check a recent run:
+
+```bash
+gh run list --workflow ci.yml --limit 3
+```
+
+For a run that is still in progress, replace `RUN_ID` below with the numeric ID from `gh run list`:
+
+```bash
+gh run watch RUN_ID
+```
+
 ## Git and next milestones
 
 Review changes and push them with:
@@ -148,4 +165,4 @@ Review changes and push them with:
 git status --short --branch && git log -3 --oneline && git push
 ```
 
-Keep credentials, Kubernetes Secrets, `.env` files, Terraform state, and saved plans out of Git. Commit `terraform/aws/.terraform.lock.hcl` so provider selection is repeatable. Next lab milestones include a multi-platform image, an idempotent Ansible update path, CI/CD, monitoring, and documented rollback.
+Keep credentials, Kubernetes Secrets, `.env` files, Terraform state, and saved plans out of Git. Commit `terraform/aws/.terraform.lock.hcl` so provider selection is repeatable. Next lab milestones include a multi-platform image, automated delivery to each deployment, monitoring, and documented rollback.
