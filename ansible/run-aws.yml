@@ -1,0 +1,22 @@
+---
+- name: Run Ops Atlas on AWS
+  hosts: aws
+  become: true
+
+  tasks:
+    - name: Check for existing Ops Atlas container
+      ansible.builtin.command: docker container inspect ops-atlas-aws
+      register: existing_container
+      failed_when: false
+      changed_when: false
+
+    - name: Start Ops Atlas container
+      ansible.builtin.command: >-
+        docker run -d
+        --name ops-atlas-aws
+        --restart unless-stopped
+        -p 8080:8080
+        -e DEPLOYMENT_TARGET=aws-ec2
+        -e APP_VERSION=0.5
+        ops-atlas:0.5
+      when: existing_container.rc != 0

@@ -4,7 +4,20 @@ async function showRuntime() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const runtime = await response.json();
 
-    const cardIndex = runtime.target === "turing-pi-k3s" ? 1 : 0;
+    const cardIndex = {
+      "local-docker": 0,
+      "turing-pi-k3s": 1,
+      "aws-ec2": 2,
+    }[runtime.target];
+    const labels = {
+      "local-docker": "Local Docker",
+      "turing-pi-k3s": "Turing Pi K3s",
+      "aws-ec2": "AWS Cloud",
+    };
+    const banner = document.querySelector("#runtime-banner");
+    banner.textContent = `RUNNING ON ${labels[runtime.target]} · VERSION ${runtime.version}`;
+    banner.hidden = false;
+
     const card = document.querySelectorAll(".card")[cardIndex];
     card.querySelector(".status").textContent = "● LIVE";
 

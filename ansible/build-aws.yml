@@ -1,0 +1,27 @@
+---
+- name: Build Ops Atlas on AWS
+  hosts: aws
+  become: true
+
+  tasks:
+    - name: Create application directory
+      ansible.builtin.file:
+        path: /opt/ops-atlas
+        state: directory
+        mode: "0755"
+
+    - name: Copy application files
+      ansible.builtin.copy:
+        src: "../{{ item }}"
+        dest: "/opt/ops-atlas/{{ item }}"
+        mode: "0644"
+      loop:
+        - Dockerfile
+        - index.html
+        - server.py
+        - status.js
+
+    - name: Build AMD64 container image
+      ansible.builtin.command:
+        cmd: docker build -t ops-atlas:0.5 /opt/ops-atlas
+      changed_when: true

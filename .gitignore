@@ -4,3 +4,8 @@
 *.tfstate.*
 __pycache__/
 *.pyc
+.terraform/
+*.tfvars
+*.tfvars.json
+*.tfplan
+crash.log
