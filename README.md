@@ -1,52 +1,87 @@
 # Ops Atlas
 
-Ops Atlas is a hands-on hybrid deployment lab. The same application source runs in a Docker container on a Turing Pi K3s cluster and on an AWS EC2 instance. The dashboard reads `/api/status` to show which environment served the page.
+Ops Atlas is a hybrid deployment lab. One application runs on a Turing Pi K3s cluster (ARM64) and an AWS EC2 instance (AMD64). The dashboard checks both `/api/status` endpoints from your browser and refreshes their cards every 30 seconds.
 
-## Deployment map
+## Current deployment
 
-| Component | Location | Role |
-| --- | --- | --- |
-| Source and ARM64 image builds | `turing-manager` | Edit the app, build ARM64 images, push to the local registry |
-| Image registry | `turing-node01:5000` | Store images for the Turing Pi cluster |
-| K3s administration | `k8s-manager` | Apply manifests and inspect the cluster |
-| K3s application | Turing Pi ARM64 worker | Run the dashboard and status API |
-| AWS administration | `devops-manager` | Run Terraform and Ansible, keep local Terraform state |
-| AWS application | `ops-atlas-aws` EC2 host | Run the AMD64 Docker image |
-
-The K3s and AWS images currently come from the same source but are built separately for ARM64 and AMD64. Publishing a single multi-platform image is a later lab step.
-
-## Open and identify each deployment
-
-Connect your device to the tailnet, then open:
-
-| Environment | Dashboard | API | Deployed version at time of writing |
+| Environment | Dashboard | API | Runtime |
 | --- | --- | --- | --- |
-| Turing Pi K3s | <http://ops-atlas> | <http://ops-atlas/api/status> | `0.7` |
-| AWS EC2 | <http://ops-atlas-aws:8080> | <http://ops-atlas-aws:8080/api/status> | `0.7` |
+| Turing Pi K3s | <http://ops-atlas> | <http://ops-atlas/api/status> | Kubernetes pod on an ARM64 worker |
+| AWS EC2 | <http://ops-atlas-aws:8080> | <http://ops-atlas-aws:8080/api/status> | Docker on Amazon Linux 2023 AMD64 |
 
-The API returns `target`, `version`, `hostname`, and `time_utc`. Either dashboard shows a banner for the environment serving that page and another banner when the peer deployment responds. The K3s and AWS cards refresh every 30 seconds. Checks run in your browser, so `UNREACHABLE` can mean that your device cannot reach a tailnet endpoint; it does not prove that the remote container stopped. Connect your browser device to the tailnet. These hostnames are not public internet domains.
+These names work from devices connected to the tailnet; they are not public internet addresses. An `UNREACHABLE` card reports what **your browser** could reach. It does not by itself prove that the remote app is down. Each API response identifies the target, deployed version, container or pod hostname, and UTC time.
 
-## Application files
+The deployed version is now `sha-` plus the first seven characters of the Git commit that triggered delivery. For example, `sha-844d534` on both APIs shows they came from the same CI run. The images are selected by the full OCI digest returned by the publish job.
+
+## Hosts and responsibilities
+
+| Host or service | Responsibility |
+| --- | --- |
+| GitHub Actions | Test the app, publish one multi-platform GHCR image, then deploy to K3s and AWS |
+| GitHub Container Registry | Store the AMD64 and ARM64 variants under the same image digest |
+| `k8s-manager` | Kubernetes administration and manual inspections |
+| Turing Pi ARM64 workers | Run the K3s app; no GitHub runner or GitOps controller installed |
+| `devops-manager` | Keep Terraform state, run Terraform and optional Ansible maintenance |
+| `ops-atlas-aws` | EC2 Docker host, registered with Tailscale and Systems Manager |
+
+## What a push does
+
+`.github/workflows/ci.yml` runs on a push to `main`, a pull request to `main`, or manual dispatch:
+
+1. `build-and-smoke-test` checks Python syntax, builds and starts a test container, and checks the page, JavaScript, and status API.
+2. `publish-image` runs after tests on a push to `main`. It publishes Linux AMD64 and ARM64 variants to `ghcr.io/shellback1998/ops-atlas` and passes the image digest to the deployment jobs.
+3. `deploy-k3s` joins the tailnet as a temporary GitHub-hosted runner, updates the `ops-atlas` Deployment to that digest, sets `APP_VERSION=sha-...`, and waits for the rollout.
+4. `deploy-aws` runs after K3s succeeds. GitHub OIDC assumes a dedicated AWS IAM role and uses Systems Manager to run `scripts/deploy-aws-ssm.sh` on the one EC2 instance. The script pulls the same digest, verifies AMD64, replaces the container when necessary, and retries the local status API until it reports the expected version.
+
+No self-hosted runner is installed on the lab machines. AWS deployment uses Systems Manager; it does not require a public inbound SSH or app port. The EC2 host must remain online in Systems Manager and be able to pull the public GHCR image.
+
+To inspect the latest run from a machine with an authenticated GitHub CLI:
+
+```bash
+gh run list --workflow ci.yml --limit 3
+```
+
+Copy the numeric ID of the desired run from that list, then run `gh run view` or `gh run watch` with that ID. To verify the two endpoints from a tailnet-connected machine:
+
+```bash
+curl -sS http://ops-atlas/api/status
+curl -sS http://ops-atlas-aws:8080/api/status
+```
+
+If AWS delivery fails after K3s succeeds, the K3s deployment stays on the new version. Inspect the failed GitHub job and both API responses before retrying. A workflow rerun rebuilds and republishes its commit and then attempts both deployments again.
+
+## Deployment credentials and scope
+
+| Credential or identity | Storage and access |
+| --- | --- |
+| `TS_OAUTH_CLIENT_ID`, `TS_AUDIENCE` | GitHub Actions repository secrets for temporary tailnet access |
+| `K3S_DEPLOY_TOKEN`, `K3S_CA_B64` | GitHub Actions repository secrets; token authenticates the `ops-atlas-deployer` ServiceAccount and CA verifies K3s TLS |
+| `ops-atlas-deployer` | K3s ServiceAccount with `get`, `patch`, and `watch` on the `ops-atlas` Deployment only; no permission to read Kubernetes Secrets |
+| `ops-atlas-github-deploy` | Terraform-managed IAM role assumed using GitHub OIDC for this repository's `main` branch; can send `AWS-RunShellScript` only to the Ops Atlas EC2 instance and read command results |
+
+The Kubernetes token is held in an `ops-atlas-deployer-token` Secret in the `ops-atlas` namespace. It is long lived: rotate or delete the GitHub secret and the K3s Secret when access is no longer needed. Never commit a token, populated kubeconfig, Terraform state, or saved plan. The **manifest that creates** a Kubernetes token Secret can be stored outside the repository without containing the generated token.
+
+The Terraform AWS role is limited to one instance, but `AWS-RunShellScript` runs commands as root **on that instance**. Restrict who can edit the GitHub workflow and who can push to `main`.
+
+## Application and infrastructure files
 
 | File | Purpose |
 | --- | --- |
-| `index.html` | Dashboard layout and styling |
-| `status.js` | Check both deployments and update their cards and banners |
-| `server.py` | Serve the dashboard and JSON status API on port 8080 |
-| `Dockerfile` | Package the Python application |
-| `k8s/ops-atlas.yaml` | Namespace, Deployment, and internal Service |
-| `k8s/tailscale.yaml` | Tailscale LoadBalancer Service |
-| `terraform/aws/main.tf` | Define the AWS EC2 instance |
-| `ansible/inventory.ini` | Connect Ansible to the AWS host over Tailscale |
-| `ansible/bootstrap-aws.yml` | Install Git and Docker on Amazon Linux 2023 |
-| `ansible/build-aws.yml` | Copy application files and build an AMD64 image on EC2 |
-| `ansible/run-aws.yml` | Start the AWS container if it does not exist |
-| `ansible/deploy-aws.yml` | Build when source changes, replace an outdated container, and verify the API |
-| `.github/workflows/ci.yml` | Build and smoke-test the application on GitHub Actions |
+| `index.html`, `status.js`, `server.py`, `Dockerfile` | Dashboard, live status behavior, API, and container image |
+| `k8s/ops-atlas.yaml`, `k8s/tailscale.yaml` | Baseline K3s Deployment and Services |
+| `terraform/aws/main.tf` | Existing EC2 instance and network selections |
+| `terraform/aws/github-deploy.tf` | GitHub OIDC provider, restricted AWS role, and SSM policy |
+| `scripts/deploy-aws-ssm.sh` | Idempotent EC2 container deployment and health check |
+| `.github/workflows/ci.yml` | CI, publishing, K3s delivery, and AWS delivery |
+| `.github/workflows/tailnet-connectivity.yml` | Manual connectivity test for a temporary tailnet runner |
+| `ansible/bootstrap-aws.yml` | Install and start Docker on the EC2 host |
+| `ansible/deploy-aws.yml` | Earlier manual deployment path using a selected GHCR digest |
 
-## Work locally with Docker
+The currently committed `k8s/ops-atlas.yaml` pins an older image digest as a baseline for manual recovery. **Applying that manifest directly can roll the running app back.** Normal releases use the GitHub Actions deployment job. If you apply the manifest manually, first set its image and `APP_VERSION` to the intended release.
 
-On `turing-manager`, from the repository root:
+## Work locally
+
+On `turing-manager` or another host with Docker, in this repository:
 
 ```bash
 docker build -t ops-atlas:local .
@@ -56,73 +91,62 @@ curl http://localhost:8083/api/status
 docker stop ops-atlas-local
 ```
 
-If Docker reports that the name or port is already in use, inspect existing lab containers with `docker ps -a --filter name=ops-atlas` before starting another preview.
+The local HTTP registry on `turing-node01:5000` was used for earlier ARM64 lab releases. Current automatic releases use GHCR instead.
 
-## Turing Pi K3s
+## Earlier manual deployment path
 
-Build and push an ARM64 image from `turing-manager`; match the tag in `k8s/ops-atlas.yaml` to the image you push. The local registry uses HTTP, so each K3s worker that pulls from it must already have containerd registry configuration for `192.168.8.191:5000`.
+The original lab built the ARM64 app on `turing-manager`, pushed it to the local HTTP registry, and applied manifests on `k8s-manager`. That still demonstrates the individual steps; the CI/CD workflow now handles routine releases. For an isolated manual test, choose a **new** image tag. Before copying the manifest, update its image and `APP_VERSION` to that tag and version. Applying it changes the live deployment:
 
 ```bash
+# turing-manager
 docker buildx build --platform linux/arm64 \
-  -t 192.168.8.191:5000/ops-atlas:0.7-arm64 --load .
-docker push 192.168.8.191:5000/ops-atlas:0.7-arm64
-```
-
-The current workflow copies the Kubernetes manifests to `k8s-manager` and applies them there:
-
-```bash
+  -t 192.168.8.191:5000/ops-atlas:manual-arm64 --load .
+docker push 192.168.8.191:5000/ops-atlas:manual-arm64
 scp k8s/ops-atlas.yaml k8s/tailscale.yaml piadmin@k8s-manager:/tmp/
 ```
+
+Then, on `k8s-manager`:
+
+```bash
+kubectl apply -f /tmp/ops-atlas.yaml -f /tmp/tailscale.yaml
+kubectl rollout status deployment/ops-atlas -n ops-atlas --timeout=180s
+```
+
+The original AWS lab used Tailscale SSH and Ansible from `devops-manager`. Its playbook remains useful for practicing configuration management; it is a separate manual deployment path from CI/CD:
+
+```bash
+ansible aws -i ansible/inventory.ini -m ping
+ansible-playbook -i ansible/inventory.ini ansible/bootstrap-aws.yml
+ansible-playbook -i ansible/inventory.ini ansible/deploy-aws.yml
+```
+
+`ansible/deploy-aws.yml` pins its own older digest. Running it now can replace the CI/CD version on AWS. Update that digest deliberately when practicing manual deployment, then push `main` again to return both targets to a matched CI/CD release. The older `build-aws.yml` and `run-aws.yml` are retained as separate learning steps.
+
+## Inspect and maintain the running systems
 
 On `k8s-manager`:
 
 ```bash
-kubectl apply -f /tmp/ops-atlas.yaml -f /tmp/tailscale.yaml
-kubectl rollout status deployment/ops-atlas -n ops-atlas --timeout=120s
+kubectl rollout status deployment/ops-atlas -n ops-atlas --timeout=180s
 kubectl get pods -n ops-atlas -o wide
-kubectl get service ops-atlas-tailscale -n ops-atlas
-curl http://ops-atlas/api/status
-k3s-status
-k3s-health
+kubectl get deployment ops-atlas -n ops-atlas \
+  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
 ```
 
-To deploy a newer version, update the image tag, `APP_VERSION`, and manifest files, then push the image before applying the updated manifests. Do not rely on a mutable tag to indicate a new version.
-
-## AWS: Terraform and Ansible
-
-Run these commands on `devops-manager`, from its `~/ops-atlas` checkout. AWS credentials and Tailscale SSH access must already be set up. The Terraform configuration uses an existing subnet, a security group without inbound rules, and an existing SSM instance profile. Terraform state is local to this checkout and must be retained until the instance is destroyed.
+On `devops-manager`:
 
 ```bash
-terraform -chdir=terraform/aws init
-terraform -chdir=terraform/aws plan
-terraform -chdir=terraform/aws apply
 terraform -chdir=terraform/aws output
+aws ssm describe-instance-information \
+  --filters Key=InstanceIds,Values=i-054c9cecfd2dbc1a4 \
+  --query 'InstanceInformationList[].[InstanceId,PingStatus]' --output table
 ```
 
-The EC2 host is Amazon Linux 2023 on AMD64. In this lab Tailscale was installed and enrolled manually as `ops-atlas-aws`; it is not provisioned by the Terraform or Ansible files. Once the host is enrolled, check noninteractive access and configure the app:
+Terraform state is local to `devops-manager` and must be retained to manage or destroy the EC2 and IAM resources. Tailscale enrollment on the EC2 host was performed manually; it is not part of Terraform.
 
-```bash
-ssh -o BatchMode=yes ec2-user@ops-atlas-aws 'hostname && id -un'
-ansible aws -i ansible/inventory.ini -m ping
-ansible-playbook -i ansible/inventory.ini ansible/bootstrap-aws.yml
-ansible-playbook -i ansible/inventory.ini ansible/deploy-aws.yml
-curl http://ops-atlas-aws:8080/api/status
-```
+## Cleanup and revocation
 
-`bootstrap-aws.yml` installs Git and Docker and enables Docker. `deploy-aws.yml` copies application source from `devops-manager`, builds its AMD64 image on EC2 when the source changes, replaces the container when its image or runtime settings are outdated, and checks `/api/status`. Running the same playbook again should report `changed=0`. The earlier `build-aws.yml` and `run-aws.yml` remain in the repository as separate learning steps; the combined playbook is the current update path. It does not pull the ARM64 image from the local registry.
-
-For an application release, update `app_version` in `ansible/deploy-aws.yml` and run:
-
-```bash
-ansible-playbook -i ansible/inventory.ini ansible/deploy-aws.yml
-curl http://ops-atlas-aws:8080/api/status
-```
-
-The Docker port is reachable on the tailnet as `http://ops-atlas-aws:8080`; this lab does not open an AWS inbound security group rule for the app.
-
-## Cleanup
-
-An EC2 instance, its attached storage, and its public IPv4 address may incur charges while allocated. On `devops-manager`, after finishing the AWS lab:
+This lab's EC2 instance, volume, and public IPv4 address can incur charges while allocated. When ending the AWS lab, plan and destroy from the **same** `devops-manager` Terraform state:
 
 ```bash
 terraform -chdir=terraform/aws plan -destroy
@@ -130,39 +154,22 @@ terraform -chdir=terraform/aws destroy
 terraform -chdir=terraform/aws state list
 ```
 
-Check that the instance is gone in AWS, then remove `ops-atlas-aws` from the Tailscale admin console. Destroying EC2 does not automatically remove its Tailscale device. Do not delete Terraform state before confirming destroy completed. Tailscale was enrolled manually, so recreating the instance requires enrolling it again.
+Destroying Terraform resources also removes this lab's GitHub OIDC provider and deployment role. Confirm the EC2 instance is gone and remove its `ops-atlas-aws` device from the Tailscale admin console; Terraform does not remove that manually enrolled device. Recreating the host requires Tailscale enrollment and Docker bootstrap again. Once AWS is destroyed, later pushes to `main` will make the AWS deployment job fail until the host is recreated or the workflow is changed.
 
-On `k8s-manager`, remove the temporary K3s deployment and its Tailscale Service when finished with that part of the lab:
+To end the K3s lab on `k8s-manager`, delete the `ops-atlas` namespace. This also deletes the deployment ServiceAccount and its token Secret:
 
 ```bash
 kubectl delete namespace ops-atlas
-kubectl get namespace ops-atlas
 ```
 
-On `turing-manager`, inspect and stop temporary Docker preview containers that you no longer need. Source files, Git history, and registry images are separate from these running workloads; remove them only when you intend to.
+Remove the now-unused repository secrets through GitHub Settings or `gh secret delete K3S_DEPLOY_TOKEN --repo shellback1998/ops-atlas` (and the other three listed above) when retiring the pipeline. Keep the GitHub repository and source unless you intend to remove them.
 
-## Continuous integration
+## Git workflow
 
-The first GitHub Actions workflow runs on pushes to `main`, pull requests targeting `main`, and manual dispatch. It checks Python syntax, builds the Docker image, starts a container, and checks the dashboard, JavaScript, and `/api/status`. It does not deploy to K3s or AWS and does not need cloud credentials.
-
-On `turing-manager`, check a recent run:
-
-```bash
-gh run list --workflow ci.yml --limit 3
-```
-
-For a run that is still in progress, replace `RUN_ID` below with the numeric ID from `gh run list`:
-
-```bash
-gh run watch RUN_ID
-```
-
-## Git and next milestones
-
-Review changes and push them with:
+Review recent commits and push in one command:
 
 ```bash
 git status --short --branch && git log -3 --oneline && git push
 ```
 
-Keep credentials, Kubernetes Secrets, `.env` files, Terraform state, and saved plans out of Git. Commit `terraform/aws/.terraform.lock.hcl` so provider selection is repeatable. Next lab milestones include a multi-platform image, automated delivery to each deployment, monitoring, and documented rollback.
+Commit `terraform/aws/.terraform.lock.hcl` for repeatable provider selection. Keep `.terraform/`, `*.tfstate`, saved Terraform plans, credentials, and generated Kubernetes tokens out of Git.
