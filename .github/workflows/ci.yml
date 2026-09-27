@@ -167,7 +167,7 @@ jobs:
           rm -f "$RUNNER_TEMP/ops-atlas.kubeconfig" "$RUNNER_TEMP/k3s-ca.crt"
 
   deploy-aws:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_AWS == 'true'
     needs: [publish-image, deploy-k3s]
     runs-on: ubuntu-latest
     concurrency:
